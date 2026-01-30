@@ -1,0 +1,20 @@
+[project]
+name = "PADIS"
+version = "0.1.0"
+authors = [
+    {name = "Stijn Wittouck", email = "stijn.wittouck@uantwerpen.be"}
+]
+description = "Prediction of insertion sequences in prokaryotic genomes"
+readme = "README.md"
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Operating System :: OS Independent"
+]
+license = "GPL-3.0-or-later"
+requires-python = ">=3.10"
+dependencies = [
+  "pandas>=1.5"
+]
+
+[project.scripts]
+padis = "padis.cli:main"
