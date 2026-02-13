@@ -178,8 +178,8 @@ def determine_core(genes: pd.DataFrame) -> (set[str], set[tuple[str, str]],
     singlecopy_prevalence = (counts == 1).sum(axis = 0) / n_genomes 
     core = singlecopy_prevalence[singlecopy_prevalence >= 0.95].index.tolist() 
     counts_core = counts[core]
-    multicopy = counts_core[counts_core >= 2].stack().index.tolist() 
-    zerocopy = counts_core[counts_core == 0].stack().index.tolist() 
+    multicopy = counts_core.stack().loc[lambda x: x >= 2].index.tolist()
+    zerocopy = counts_core.stack().loc[lambda x: x == 0].index.tolist()
     core = set(core)
     multicopy = set(multicopy)
     zerocopy = set(zerocopy)
@@ -225,7 +225,7 @@ def process_annotation(
     annotation["interval"] = pd.Series(dtype = "Int64")
     intervals = []
     
-    contig = annotation["seqid"][0]
+    contig = annotation["seqid"].tolist()[0]
     interval = 0
     members = []
     left_posind = None
@@ -302,15 +302,19 @@ def define_positions(intervals: pd.DataFrame) -> dict[str, int]:
     :return: Dictionary with position for every position indicator. 
     """
     # posinds = [o + "+" for o in core] + [o + "-" for o in core]
-    posinds = set(intervals["posind1"].tolist() + intervals["posind2"].tolist())
-    posinds.discard(None)
-    posinds = list(posinds)
+    posinds = (
+        intervals[["posind1", "posind2"]]
+        .stack()
+        .dropna()
+        .unique()
+        .tolist()
+    )
     posinds = pd.DataFrame(
         {"posind": posinds, "position": range(len(posinds))})
     posinds = posinds.set_index("posind")
     for row in intervals.itertuples():
-        if not row.posind1: continue
-        if not row.posind2: continue
+        if pd.isna(row.posind1): continue
+        if pd.isna(row.posind2): continue
         position1 = posinds.at[row.posind1, "position"] 
         position2 = posinds.at[row.posind2, "position"] 
         if position1 != position2:
