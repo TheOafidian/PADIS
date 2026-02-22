@@ -78,6 +78,7 @@ def process_orthogroup(genes, genomes, flank_size):
     if not seq1 or not seq2:
         return(pd.Series({
             "tir_score": 0,
+            "fdr_score": 0,
             "comment": "All flanking regions too short"
         }))
 
@@ -95,9 +96,10 @@ def process_orthogroup(genes, genomes, flank_size):
     ):
         return(pd.Series({
             "tir_score": 0,
+            "fdr_score": 0,
             "comment": "Genes not fully inside the alignment"
         }))
-    
+
     if (
         alicoo[0, 0] == 0 
         or alicoo[1, 0] == 0
@@ -106,15 +108,18 @@ def process_orthogroup(genes, genomes, flank_size):
     ): 
         return(pd.Series({
             "tir_score": 0,
+            "fdr_score": 0,
             "comment": "Alignment extends beyond flanks"
         }))
-    
+
     term_left = seq1[alicoo[0, 0]:alicoo[0, -1]][:30]
     term_right = seq1[alicoo[0, 0]:alicoo[0, -1]][-30:]
-    term_right = term_right.reverse.complement
-    alignments = aligner.align(term_left.seq, term_right.seq)
+    term_right_rc = term_right.reverse.complement
+    tir_alignments = aligner.align(term_left.seq, term_right_rc.seq)
+    fdr_alignments = aligner.align(term_left.seq, term_right.seq)
     return(pd.Series({
-        "tir_score": alignments[0].score,
+        "tir_score": tir_alignments[0].score,
+        "fdr_score": fdr_alignments[0].score,
         "comment": "Termini extraction successful"
     }))
 
