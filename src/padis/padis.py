@@ -9,9 +9,10 @@ from .input import read_files, read_pangenome
 
 def run_padis(
         assemblies_path: Path, annotation_path: Path, pangenome_file: Path, 
-        output_dir: Path, write_intervals: bool = False, debug: bool = False,
-        threads = 1
-        ) -> None:
+        output_dir: Path, max_length: int = 3000, write_intervals: bool = False, 
+        debug: bool = False, threads = 1) -> None:
+
+    args = locals()
     
     lg.basicConfig(
         level = lg.DEBUG if debug else lg.INFO,
@@ -63,6 +64,9 @@ def run_padis(
     lg.info(f"This is {meta['Name']} version {meta['Version']}")
     if debug: lg.info("Running in debugging mode")
 
+    lg.info("Arguments:")
+    for arg, value in args.items(): lg.info(f"  {arg}: {value}")
+
     lg.info(
         "Starting phase 1: identification of candidate insertion sequence "
         "orthogroups")
@@ -73,6 +77,7 @@ def run_padis(
         "Starting phase 2: assessment of candidate insertion sequence "
         "orthogroups")
     assess_canisorthogroups(
-        canisgenes_file, assemblies_files, canisorthogroups_file, threads)
+        canisgenes_file, assemblies_files, canisorthogroups_file, max_length,
+        threads)
 
     lg.info("PADIS out\n")

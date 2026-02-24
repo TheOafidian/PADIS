@@ -20,7 +20,7 @@ def main() -> None:
 
     run_padis(
         assemblies_path, annotations_path, pangenome_file, output_dir, 
-        args.write_intervals, args.debug, args.threads)
+        args.max_length, args.write_intervals, args.debug, args.threads)
 
 def parse_arguments(meta) -> None:
 
@@ -42,6 +42,10 @@ def parse_arguments(meta) -> None:
     parser.add_argument(
         "outputdir", help = "directory for output")
     parser.add_argument(
+        "-l", "--max_length", default = 3000,
+        help = "maximum length of the insertion sequences in base pairs "
+        "[default: 3,000]")
+    parser.add_argument(
         "-i", "--write_intervals", action = "store_true",
         help = "write left and right position indicators of intervals")
     parser.add_argument(
@@ -49,7 +53,7 @@ def parse_arguments(meta) -> None:
         help = "be extra verbose for debugging and continue in output folder " \
         "if already exists (log file will be appended)")
     parser.add_argument(
-        "-t", "--threads", type = int,
+        "-t", "--threads", type = int, default = 1,
         help = "number of threads [default: 1]")
     parser.add_argument(
         "-v", "--version", action = "version", 
@@ -60,9 +64,6 @@ def parse_arguments(meta) -> None:
         sys.exit(0)
     
     args = parser.parse_args() 
-
-    # set defaults
-    if not "threads" in args: args.threads = 1
 
     return(args)
 

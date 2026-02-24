@@ -1,3 +1,7 @@
+# terms/abbreviations: 
+# - reg = region: DNA sequence around a gene to align 
+# - ali = aligned section: part of a region that aligns to another region
+
 from Bio import Align
 from concurrent.futures import ProcessPoolExecutor
 import logging as lg
@@ -14,9 +18,8 @@ from .input import read_canisgenes
 
 def assess_canisorthogroups(
         canisgenes_file: Path, assemblies_files: dict[str, Path], 
-        canisorthogroups_file: Path, threads: int) -> None:
-    
-    flank_size = 3000
+        canisorthogroups_file: Path, max_length: int, threads: int
+        ) -> None:
 
     if canisorthogroups_file.exists():
         lg.info("Existing canisorthogroups file found - skipping phase 2")
@@ -50,14 +53,14 @@ def assess_canisorthogroups(
             canisgenes
             .groupby("orthogroup")
             .apply(
-                lambda g: process_orthogroup(g, assemblies_files, flank_size)
+                lambda g: process_orthogroup(g, assemblies_files, max_length)
             )
         )
     else: 
         lg.info(
             f"Assessing flanking regions per orthogroup using {threads} "
             "threads")
-        tasks = [(orthogroup, genes, assemblies_files, flank_size) for
+        tasks = [(orthogroup, genes, assemblies_files, max_length) for
             orthogroup, genes in canisgenes.groupby("orthogroup", sort = False)]
         with ProcessPoolExecutor(max_workers = threads) as executor: 
             results = list(executor.map(_worker, tasks))
@@ -77,9 +80,7 @@ def assess_canisorthogroups(
 # lower level #
 ###############
 
-def process_orthogroup(genes, assemblies_files, flank_size):
-    
-    FS = flank_size
+def process_orthogroup(genes, assemblies_files, max_length):
 
     lg.debug(f"Processing orthogroup {genes.name}")
 
@@ -87,7 +88,7 @@ def process_orthogroup(genes, assemblies_files, flank_size):
         "length": 0,
         "tir_score": 0,
         "fdr_score": 0,
-        "comment": ""
+        "problem": ""
     })
 
     # make copy to avoid modifying original gene table 
@@ -99,61 +100,71 @@ def process_orthogroup(genes, assemblies_files, flank_size):
     # remark: indexing will not happen again since .fai files already exist
     genomes = {p.stem: Fasta(p) for p in assemblies_files.values()}
 
-    gene1, seq1 = sequence_with_flanks(genomes, genes, FS)
+    gene1, reg1 = sequence_with_flanks(genomes, genes, max_length)
     genes = genes.loc[(genes["position"] != gene1.position)]
-    gene2, seq2 = sequence_with_flanks(genomes, genes, FS)
+    gene2, reg2 = sequence_with_flanks(genomes, genes, max_length)
 
-    if not seq1 or not seq2:
-        result["comment"] = "All flanking regions too short"
+    if not reg1 or not reg2:
+        result["problem"] = "All flanking regions too short"
         return(result)
 
     aligner = Align.PairwiseAligner(scoring = "blastn")
     aligner.mode = "local"
-    alignments = aligner.align(seq1.seq, seq2.seq, strand = "+")
+    strand = "+" if gene1.strand == gene2.strand else "-"
+    alignments = aligner.align(reg1.seq, reg2.seq, strand = strand)
     alignment = alignments[0]
-    alicoo = alignment.coordinates
+    alico = alignment.coordinates
+    ali1_start, ali1_end = [reg1.start + c for c in sorted(alico[0, [0, -1]])]
+    ali2_start, ali2_end = [reg2.start + c for c in sorted(alico[1, [0, -1]])]
 
     if (
-        alicoo[0, 0] > FS
-        or (alicoo[0, -1] < len(seq1) - FS)
-        or alicoo[1, 0] > FS
-        or alicoo[1, -1] < len(seq2) - FS
+        ali1_start > gene1.start
+        or ali1_end < gene1.end
+        or ali2_start > gene2.start
+        or ali2_end < gene2.end
     ):
-        result["comment"] = "Genes not fully inside the alignment"
+        result["problem"] = "Genes not fully inside the alignment"
         return(result)
 
     if (
-        alicoo[0, 0] == 0 
-        or alicoo[1, 0] == 0
-        or alicoo[0, -1] == FS + len(seq1)
-        or alicoo[1, -1] ==  FS + len(seq2)
+        ali1_start == reg1.start
+        or ali1_end == reg1.end
+        or ali2_start == reg2.start
+        or ali2_end == reg2.end
     ): 
-        result["comment"] = "Alignment extends beyond flanks"
+        result["problem"] = "Alignment extends beyond flanks"
         return(result)
 
-    term_left = seq1[alicoo[0, 0]:alicoo[0, -1]][:30]
-    term_right = seq1[alicoo[0, 0]:alicoo[0, -1]][-30:]
-    term_right_rc = term_right.reverse.complement
-    tir_alignments = aligner.align(term_left.seq, term_right_rc.seq)
-    fdr_alignments = aligner.align(term_left.seq, term_right.seq)
-    result["length"] = np.int64(alicoo[0, -1] - alicoo[0, 0])
+    # alico[0, 0] is always smaller than alico[0, -1]
+    # (but if gene.strand == "-", alico[1, 0] is larger than alico[1, -1])
+    ali1 = reg1[alico[0, 0]:alico[0, -1]]
+    if gene1.strand == "-": ali1 = ali1.reverse.complement
+    term_up = ali1[:30]
+    term_down = ali1[-30:]
+    term_down_rc = term_down.reverse.complement
+    tir_alignments = aligner.align(term_up.seq, term_down_rc.seq)
+    fdr_alignments = aligner.align(term_up.seq, term_down.seq)
+    result["length"] = np.int64(len(ali1.seq))
     result["tir_score"] = np.int64(tir_alignments[0].score)
     result["fdr_score"] = np.int64(fdr_alignments[0].score)
-    result["comment"] = "Termini extraction successful"
+    if len(ali1.seq) > max_length: 
+        result["problem"] = "Aligned section too long"
+    else:
+        result["problem"] = ""
     return(result)
 
 # helper for running process_orthogroup in parallel 
 # needs to be top-level function
 def _worker(task):
-    orthogroup, genes, assemblies_files, flank_size = task
+    orthogroup, genes, assemblies_files, max_length = task
     genes.name = orthogroup
-    result = process_orthogroup(genes, assemblies_files, flank_size)
+    result = process_orthogroup(genes, assemblies_files, max_length)
     result.loc["orthogroup"] = orthogroup
     return(result)
 
 def sequence_with_flanks(
-        genomes: dict[Fasta], genes: pd.DataFrame, flanksize: int) -> (tuple, 
-        Sequence):
+        genomes: dict[Fasta], genes: pd.DataFrame, max_length: int
+        ) -> tuple[tuple, Sequence]:
     """
     Sample a gene and extract its sequencing including flanking regions.
 
@@ -170,14 +181,13 @@ def sequence_with_flanks(
     seq = None
 
     for gene in genes.itertuples():
-        start = gene.start - flanksize
-        end = gene.end + flanksize
+        start = min(gene.end - max_length, gene.start)
+        end = max(gene.start + max_length, gene.end)
         if start < 0: continue
         seq = genomes[gene.genome][gene.contig][start:end]
-        length = gene.end - gene.start
-        if len(seq.seq) < length + 2 * flanksize: continue
+        gene_length = gene.end - gene.start
+        if len(seq.seq) < (2 * max_length - gene_length): continue
         if seq.seq.count("N") > 10: continue
-        if gene.strand == "-": seq = seq.reverse.complement
         break 
 
     return(gene, seq)
