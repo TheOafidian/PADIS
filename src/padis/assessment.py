@@ -1,6 +1,12 @@
 # terms/abbreviations: 
 # - reg = region: DNA sequence around a gene to align 
 # - ali = aligned section: part of a region that aligns to another region
+# - term = terminus: first/last N nucleotides of aligned section
+# - start: start position of a DNA segment, always smaller than stop
+# - end: end position of a DNA segment, always greater than start
+# - up = upstream
+# - down = downstream
+# - rc = reverse complement
 
 from Bio import Align
 from concurrent.futures import ProcessPoolExecutor
@@ -17,7 +23,7 @@ from .input import read_canisgenes
 #############
 
 def assess_canisorthogroups(
-        canisgenes_file: Path, assemblies_files: dict[str, Path], 
+        canisgenes_file: Path, assemblies_files: dict[str, Path],
         canisorthogroups_file: Path, max_length: int, threads: int
         ) -> None:
 
@@ -80,15 +86,21 @@ def assess_canisorthogroups(
 # lower level #
 ###############
 
-def process_orthogroup(genes, assemblies_files, max_length):
+def process_orthogroup(
+        genes: pd.DataFrame, assemblies_files: dict[str, Path], 
+        max_length: int
+        ) -> pd.Series:
 
-    lg.debug(f"Processing orthogroup {genes.name}")
+    orthogroup = genes.name
+    lg.debug(f"Processing orthogroup {orthogroup}")
 
     result = pd.Series({
         "length": 0,
         "tir_score": 0,
         "fdr_score": 0,
-        "problem": ""
+        "too_short": False,
+        "too_long": False,
+        "includes_contig_boundary": False
     })
 
     # make copy to avoid modifying original gene table 
@@ -100,12 +112,13 @@ def process_orthogroup(genes, assemblies_files, max_length):
     # remark: indexing will not happen again since .fai files already exist
     genomes = {p.stem: Fasta(p) for p in assemblies_files.values()}
 
-    gene1, reg1 = sequence_with_flanks(genomes, genes, max_length)
+    gene1, reg1 = best_region(genomes, genes, max_length)
     genes = genes.loc[(genes["position"] != gene1.position)]
-    gene2, reg2 = sequence_with_flanks(genomes, genes, max_length)
+    gene2, reg2 = best_region(genomes, genes, max_length)
 
+    # remark: this should normally not happen
     if not reg1 or not reg2:
-        result["problem"] = "All flanking regions too short"
+        lg.warning(f"Unable to find two regions to align for {orthogroup}")
         return(result)
 
     aligner = Align.PairwiseAligner(scoring = "blastn")
@@ -123,8 +136,11 @@ def process_orthogroup(genes, assemblies_files, max_length):
         or ali2_start > gene2.start
         or ali2_end < gene2.end
     ):
-        result["problem"] = "Genes not fully inside the alignment"
+        result["too_short"] = True
         return(result)
+
+    if (ali1_end - ali1_start) > max_length:
+        result["too_long"] = True
 
     if (
         ali1_start == reg1.start
@@ -132,8 +148,7 @@ def process_orthogroup(genes, assemblies_files, max_length):
         or ali2_start == reg2.start
         or ali2_end == reg2.end
     ): 
-        result["problem"] = "Alignment extends beyond flanks"
-        return(result)
+        result["includes_contig_boundary"] = True
 
     # alico[0, 0] is always smaller than alico[0, -1]
     # (but if gene.strand == "-", alico[1, 0] is larger than alico[1, -1])
@@ -147,10 +162,6 @@ def process_orthogroup(genes, assemblies_files, max_length):
     result["length"] = np.int64(len(ali1.seq))
     result["tir_score"] = np.int64(tir_alignments[0].score)
     result["fdr_score"] = np.int64(fdr_alignments[0].score)
-    if len(ali1.seq) > max_length: 
-        result["problem"] = "Aligned section too long"
-    else:
-        result["problem"] = ""
     return(result)
 
 # helper for running process_orthogroup in parallel 
@@ -162,32 +173,44 @@ def _worker(task):
     result.loc["orthogroup"] = orthogroup
     return(result)
 
-def sequence_with_flanks(
+def best_region(
         genomes: dict[Fasta], genes: pd.DataFrame, max_length: int
         ) -> tuple[tuple, Sequence]:
     """
-    Sample a gene and extract its sequencing including flanking regions.
+    Find the gene with the best surrounding region.
 
-    If no complete flanks can be extracted or if many uncalled bases are found,
-    a different gene will be sampled. If no genes meet these criteria, None will
-    be returned as sequence. 
-    
+    The best region is the longest (within 2 * max_length - gene_length),
+    excluding uncalled bases.
+
     :param genomes: Genome sequence (fna file) for every genome
     :param genes: Coordinates of all genes 
-    :param flanksize: Size of the flanking region to extract
+    :param max_length: Maximum length of insertion sequence
     """
 
-    gene = None
-    seq = None
+    best_gene = None
+    best_region = None
+    best_length = -1
+    perfect_region = True
 
     for gene in genes.itertuples():
-        start = min(gene.end - max_length, gene.start)
-        end = max(gene.start + max_length, gene.end)
-        if start < 0: continue
-        seq = genomes[gene.genome][gene.contig][start:end]
-        gene_length = gene.end - gene.start
-        if len(seq.seq) < (2 * max_length - gene_length): continue
-        if seq.seq.count("N") > 10: continue
-        break 
+        region_start = min(gene.end - max_length, gene.start)
+        region_end = max(gene.start + max_length, gene.end)
+        if region_start < 0:
+            perfect_region = False
+            region_start = 0
+        region = genomes[gene.genome][gene.contig][region_start:region_end]
+        if region.end < region_end:
+            perfect_region = False
+        uncalled_bases = region.seq.count("N")
+        # punish length for uncalled bases
+        region_length = len(region.seq) - uncalled_bases
+        if uncalled_bases > 0:
+            perfect_region = False
+        if region_length > best_length:
+            best_length = region_length
+            best_gene = gene
+            best_region = region
+        if perfect_region:
+            return(gene, region)
 
-    return(gene, seq)
+    return(best_gene, best_region)
