@@ -1,6 +1,7 @@
 from Bio import Align
 from concurrent.futures import ProcessPoolExecutor
 import logging as lg
+import numpy as np
 import pandas as pd
 from pathlib import Path
 from pyfaidx import Fasta, Sequence
@@ -28,7 +29,7 @@ def assess_canisorthogroups(
     for p in assemblies_files.values():
         _ = Fasta(p)
 
-    # # for testing purposes
+    # # subset orthogroups for testing purposes
     # topn = canisgenes["orthogroup"].unique()[:20]
     # canisgenes = canisgenes[canisgenes["orthogroup"].isin(topn)]
 
@@ -37,7 +38,7 @@ def assess_canisorthogroups(
         canisgenes
         .groupby("orthogroup")
         .agg(
-            n_genes = ("gene", "size"),
+            genes = ("gene", "size"),
             genomes = ("genome", "nunique"),
             positions = ("position", "nunique")
         )
@@ -49,7 +50,8 @@ def assess_canisorthogroups(
             canisgenes
             .groupby("orthogroup")
             .apply(
-                lambda g: process_orthogroup(g, assemblies_files, flank_size))
+                lambda g: process_orthogroup(g, assemblies_files, flank_size)
+            )
         )
     else: 
         lg.info(
@@ -59,7 +61,7 @@ def assess_canisorthogroups(
             orthogroup, genes in canisgenes.groupby("orthogroup", sort = False)]
         with ProcessPoolExecutor(max_workers = threads) as executor: 
             results = list(executor.map(_worker, tasks))
-        canisogs2 = pd.DataFrame(results)
+        canisogs2 = pd.DataFrame(results).set_index("orthogroup")
 
     lg.info("Merging orthogroup statistics")
     canisogs = (
@@ -81,6 +83,13 @@ def process_orthogroup(genes, assemblies_files, flank_size):
 
     lg.debug(f"Processing orthogroup {genes.name}")
 
+    result = pd.Series({
+        "length": 0,
+        "tir_score": 0,
+        "fdr_score": 0,
+        "comment": ""
+    })
+
     # make copy to avoid modifying original gene table 
     genes = genes.copy()
 
@@ -95,11 +104,8 @@ def process_orthogroup(genes, assemblies_files, flank_size):
     gene2, seq2 = sequence_with_flanks(genomes, genes, FS)
 
     if not seq1 or not seq2:
-        return(pd.Series({
-            "tir_score": 0,
-            "fdr_score": 0,
-            "comment": "All flanking regions too short"
-        }))
+        result["comment"] = "All flanking regions too short"
+        return(result)
 
     aligner = Align.PairwiseAligner(scoring = "blastn")
     aligner.mode = "local"
@@ -113,34 +119,28 @@ def process_orthogroup(genes, assemblies_files, flank_size):
         or alicoo[1, 0] > FS
         or alicoo[1, -1] < len(seq2) - FS
     ):
-        return(pd.Series({
-            "tir_score": 0,
-            "fdr_score": 0,
-            "comment": "Genes not fully inside the alignment"
-        }))
+        result["comment"] = "Genes not fully inside the alignment"
+        return(result)
 
     if (
         alicoo[0, 0] == 0 
         or alicoo[1, 0] == 0
-        or alicoo[0, 1] == FS + len(seq1)
-        or alicoo[1, 1] ==  FS + len(seq2)
+        or alicoo[0, -1] == FS + len(seq1)
+        or alicoo[1, -1] ==  FS + len(seq2)
     ): 
-        return(pd.Series({
-            "tir_score": 0,
-            "fdr_score": 0,
-            "comment": "Alignment extends beyond flanks"
-        }))
+        result["comment"] = "Alignment extends beyond flanks"
+        return(result)
 
     term_left = seq1[alicoo[0, 0]:alicoo[0, -1]][:30]
     term_right = seq1[alicoo[0, 0]:alicoo[0, -1]][-30:]
     term_right_rc = term_right.reverse.complement
     tir_alignments = aligner.align(term_left.seq, term_right_rc.seq)
     fdr_alignments = aligner.align(term_left.seq, term_right.seq)
-    return(pd.Series({
-        "tir_score": int(tir_alignments[0].score),
-        "fdr_score": int(fdr_alignments[0].score),
-        "comment": "Termini extraction successful"
-    }))
+    result["length"] = np.int64(alicoo[0, -1] - alicoo[0, 0])
+    result["tir_score"] = np.int64(tir_alignments[0].score)
+    result["fdr_score"] = np.int64(fdr_alignments[0].score)
+    result["comment"] = "Termini extraction successful"
+    return(result)
 
 # helper for running process_orthogroup in parallel 
 # needs to be top-level function
