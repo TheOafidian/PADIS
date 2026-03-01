@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from pyfaidx import Fasta, Sequence
+from random import sample
 
 from .input import read_canisgenes
 
@@ -102,6 +103,8 @@ def process_orthogroup(
         "tir_length": 0,
         "tir_up": "",
         "tir_down": "",
+        "tir_random_score": 0,
+        "tir_random_length": 0,
         "fdr_score": 0,
         "fdr_offset_up": 0,
         "fdr_offset_down": 0,
@@ -184,6 +187,12 @@ def process_orthogroup(
     result["tir_up"] = term_up[tir_co[0, 0]:tir_co[0, -1]]
     result["tir_down"] = term_down[tir_co[1, -1]:tir_co[1, 0]]
     result["tir_down"] = result["tir_down"].reverse.complement
+
+    # assess randomized tir
+    term_down.seq = ''.join(sample(term_down.seq,len(term_down.seq)))
+    tir_alignments = aligner.align(term_up.seq, term_down.seq, strand = "-")
+    result["tir_random_score"] = np.int64(tir_alignments[0].score)
+    result["tir_random_length"] = np.int64(tir_co[0, -1] - tir_co[0, 0])
 
     # assess fdr
     flank_up = reg1[(ali_start - 10):ali_start]
