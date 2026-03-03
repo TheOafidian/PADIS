@@ -16,6 +16,7 @@ import pandas as pd
 from pathlib import Path
 from pyfaidx import Fasta, Sequence
 from random import sample
+import statistics
 
 from .input import read_acc_genes
 
@@ -25,14 +26,14 @@ from .input import read_acc_genes
 
 def assess_orthogroups(
         acc_genes_file: Path, assembly_files: dict[str, Path],
-        acc_orthogroups_file: Path, summary_file: Path, max_length: int, 
+        acc_orthogroups_file: Path, summary_file: Path, max_length: int,
         threads: int
     ) -> None:
     """
-    Assess accessory orthogroups for IS status. 
-    
-    :param acc_genes_file: Path to accessory gene table with columns gene, 
-        genome, orthogroup, contig, strand, start, end and position. 
+    Assess accessory orthogroups for IS status.
+
+    :param acc_genes_file: Path to accessory gene table with columns gene,
+        genome, orthogroup, contig, strand, start, end and position.
     :param assembly_files: List of paths to assembly (.fna) files.
     :param acc_orthogroups_file: Path to output file for orthogroup stats.
     :param summary_file: Path to output file for summary stats.
@@ -75,7 +76,7 @@ def assess_orthogroups(
             orthogroup, genes in acc_genes.groupby("orthogroup", sort = False)]
         with ProcessPoolExecutor(max_workers = threads) as executor: 
             results = list(executor.map(_worker, tasks))
-        acc_ogs = pd.DataFrame(results) # .set_index("orthogroup")
+        acc_ogs = pd.DataFrame(results)
 
     lg.info("Writing candidate insertion sequence orthogroups")
     acc_ogs.to_csv(acc_orthogroups_file, index = False)
@@ -93,7 +94,7 @@ def assess_orthogroups(
 ###############
 
 def process_orthogroup(
-        genes: pd.DataFrame, assembly_files: dict[str, Path], 
+        genes: pd.DataFrame, assembly_files: dict[str, Path],
         max_length: int
     ) -> pd.Series:
 
@@ -108,10 +109,12 @@ def process_orthogroup(
         "status": "potential IS",
         "length": 0,
         "tir_score": 0,
+        "tir_nscore": 0,
         "tir_length": 0,
         "tir_offset_up": 0,
         "tir_offset_down": 0,
         "tir_random_score": 0,
+        "tir_random_nscore": 0,
         "tir_random_length": 0,
         "fdr_score": 0,
         "fdr_length": 0,
@@ -187,23 +190,35 @@ def process_orthogroup(
         ali_end = len(reg1.seq) - alico[0, 0]
 
     # assess tir
-    term_up = reg1[ali_start:ali_end][:30]
-    term_down = reg1[ali_start:ali_end][-30:]
-    tir_alignments = aligner.align(term_up.seq, term_down.seq, strand = "-")
-    tir_co = tir_alignments[0].coordinates
-    result["tir_score"] = np.int64(tir_alignments[0].score)
+    termseq_up = reg1[ali_start:ali_end][:30].seq
+    termseq_down = reg1[ali_start:ali_end][-30:].seq
+    tir_alignment = aligner.align(termseq_up, termseq_down, strand = "-")[0]
+    tir_co = tir_alignment.coordinates
+    result["tir_score"] = np.int64(tir_alignment.score)
     result["tir_offset_up"] = np.int64(tir_co[0, 0])
     result["tir_offset_down"] = np.int64(tir_co[1, 0] - 30)
-    result["tir_length"] = np.int64(tir_co[0, -1] - tir_co[0, 0])
-    result["tir_up"] = term_up[tir_co[0, 0]:tir_co[0, -1]]
-    result["tir_down"] = term_down[tir_co[1, -1]:tir_co[1, 0]]
-    result["tir_down"] = result["tir_down"].reverse.complement
+    result["tir_length"] = np.int64(tir_alignment.length)
+    result["tir_up"] = tir_alignment[0]
+    result["tir_down"] = tir_alignment[1]
 
     # assess randomized tir
-    term_down.seq = ''.join(sample(term_down.seq,len(term_down.seq)))
-    tir_alignments = aligner.align(term_up.seq, term_down.seq, strand = "-")
-    result["tir_random_score"] = np.int64(tir_alignments[0].score)
-    result["tir_random_length"] = np.int64(tir_co[0, -1] - tir_co[0, 0])
+    randomseq_down = ''.join(sample(termseq_down,len(termseq_down)))
+    tir_alignment = aligner.align(termseq_up, randomseq_down, strand = "-")[0]
+    result["tir_random_score"] = np.int64(tir_alignment.score)
+    result["tir_random_length"] = np.int64(tir_alignment.length)
+
+    # normalize tir scores
+    scores = []
+    for i in range(100):
+        randomseq_down = ''.join(sample(termseq_down,len(termseq_down)))
+        tir_alignment = aligner.align(
+            termseq_up, randomseq_down, strand = "-"
+        )[0]
+        scores.append(tir_alignment.score)
+    m = statistics.mean(scores)
+    sd = statistics.stdev(scores)
+    result["tir_nscore"] = (result["tir_score"] - m) / sd
+    result["tir_random_nscore"] = (result["tir_random_score"] - m) / sd
 
     # assess fdr
     flank_up = reg1[(ali_start - 10):ali_start]
