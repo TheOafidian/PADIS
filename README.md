@@ -1,8 +1,8 @@
 # PADIS: pangenome-based discovery of insertion sequences
 
-PADIS is a tool for the discovery of insertion sequences in prokaryotic genomes. It requires a set of genome assemblies (.fna files), gene annotation for these assemblies (.gff files) and a pangenome in [SCARAP](https://github.com/SWittouck/SCARAP) format.
+PADIS is a tool for the discovery of insertion sequences in prokaryotic genomes in a database-independent manner. In a nutshell, PADIS identifies orthogroups (gene families) present in more than one location within or across genomes and then checks them for the presence of terminal inverted repeats (TIRs). The tool requires a set of genome assemblies (.fna files), gene annotation for these assemblies (.gff files) and a pangenome in [SCARAP](https://github.com/SWittouck/SCARAP) format.
 
-PADIS is still very much in active development. This means that the interface and output may change rapidly and drastically, that there may be many bugs and that some types of input may not (yet) work. Even the name may still change. Feel free to post [issues](https://github.com/swittouck/PADIS/issues).
+PADIS is still very much in active development. This means that the interface and output may change rapidly and drastically, that there may be bugs and that some types of input may not (yet) work. Even the name may still change. Feel free to post [issues](https://github.com/swittouck/PADIS/issues).
 
 ## Installation
 
@@ -17,7 +17,7 @@ For now, you can install PADIS directly from GitHub with pip. There are only Pyt
 Given a set of assemblies (.fna files) in an `assemblies` folder, first perform gene prediction, e.g. with Prodigal:
 
     mkdir genes
-    for dir in gffs faas logs; do mkdir genes/$dir
+    for dir in gffs faas logs; do mkdir genes/$dir; done
     for assembly_file in assemblies/*.fna; do
       genome=$(basename $assembly_file .fna)
       prodigal \
@@ -26,6 +26,7 @@ Given a set of assemblies (.fna files) in an `assemblies` folder, first perform 
         -o genes/gffs/${genome}.gff \
         -a genes/faas/${genome}.faa \
         2> genes/logs/${genome}.txt
+    done
 
 Then infer the pangenome, e.g. with SCARAP, using 8 threads:
 
